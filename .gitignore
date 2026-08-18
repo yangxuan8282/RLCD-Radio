@@ -1,0 +1,26 @@
+# PlatformIO
+.pio/
+.pio-core/
+
+# Python virtual environments
+.venv/
+venv/
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Generated build and debug files
+*.elf
+*.map
+*.log
+compile_commands.json
+
+# Local tooling metadata
+.git-local/
+.codex/
+.agents/
+__pycache__/
+*.py[cod]
