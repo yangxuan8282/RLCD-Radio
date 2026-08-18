@@ -131,8 +131,8 @@ SHA256SUMS.txt
 发布示例：
 
 ```sh
-git tag v0.2.3
-git push origin v0.2.3
+git tag v0.2.4
+git push origin v0.2.4
 ```
 
 ## 更新记录

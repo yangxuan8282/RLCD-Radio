@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.4 - 2026-08-18
+
+- Added the firmware version to the WebUI title and configuration page.
+
 ## 0.2.3 - 2026-08-17
 
 - Fixed the audio watchdog callback override so the application implementation is linked instead of the library's empty weak default.

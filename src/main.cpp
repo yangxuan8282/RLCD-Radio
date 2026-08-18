@@ -30,6 +30,7 @@
 
 const int BUTTON_PIN = 0;
 const unsigned long DEBOUNCE_DELAY = 50;
+static constexpr char FIRMWARE_VERSION[] = "0.2.4";
 const int DISPLAY_WIDTH = 400;
 const int DISPLAY_HEIGHT = 300;
 int curr_url = 0;
@@ -553,8 +554,9 @@ void handleRoot()
 {
   String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
   html += "<style>body{font-family:sans-serif;background:#222;color:#fff;padding:20px;} input,textarea{width:100%;padding:10px;margin:8px 0;box-sizing:border-box;background:#333;color:#fff;border:1px solid #555;} button{background:#00b4d8;color:#fff;border:0;padding:12px;width:100%;cursor:pointer;font-size:16px;} .vol-container{display:flex;justify-content:space-between;align-items:center;}</style>";
-  html += "<title>RLCD 网络电台</title></head><body>";
+  html += "<title>RLCD 网络电台 v" + String(FIRMWARE_VERSION) + "</title></head><body>";
   html += "<h2>网络电台配置</h2>";
+  html += "<p style='color:#aaa;margin-top:-8px;'>固件版本 v" + String(FIRMWARE_VERSION) + "</p>";
   html += "<form action='/save' method='POST'>";
   html += "<label>Wi-Fi 名称:</label><input type='text' name='ssid' value='" + htmlEscape(ssid) + "'>";
   html += "<label>Wi-Fi 密码:</label><input type='password' name='pass' value='" + htmlEscape(pass) + "'>";
