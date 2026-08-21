@@ -84,19 +84,21 @@ struct raop_ctx_s *raop_create(uint32_t host, char *name,
 	char id[64];
 
 	const mdns_txt_item_t txt[] = {
-		{"am", "airesp32"},
+		{"txtvers", "1"},
+		{"ch", "2"},
+		{"cn", "0,1"},
+		{"da", "true"},
+		{"et", "0,1"},
+		{"md", "0,1,2"},
+		{"pw", "false"},
+		{"sv", "false"},
+		{"sr", "44100"},
+		{"ss", "16"},
 		{"tp", "UDP"},
-		{"sm","false"},
-		{"sv","false"},
-		{"ek","1"},
-		{"et","0,1"},
-		{"md","0,1,2"},
-		{"cn","0,1"},
-		{"ch","2"},
-		{"ss","16"},
-		{"sr","44100"},
-		{"vn","3"},
-		{"txtvers","1"},
+		{"vn", "65537"},
+		{"vs", "105.1"},
+		{"am", "ShairportSync"},
+		{"sf", "0x4"},
 	};
 
 	if (!ctx) return NULL;
@@ -144,6 +146,7 @@ struct raop_ctx_s *raop_create(uint32_t host, char *name,
 			free(ctx);
 			return NULL;
 		}
+		LOG_INFO("published %s._raop._tcp.local on port %u", id, ctx->port);
 	} else {
 		LOG_INFO("mDNS external mode - service registration skipped for %s", id);
 	}

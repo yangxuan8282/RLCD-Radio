@@ -33,7 +33,7 @@
 
 const int BUTTON_PIN = 0;
 const unsigned long DEBOUNCE_DELAY = 50;
-static constexpr char FIRMWARE_VERSION[] = "0.3.1";
+static constexpr char FIRMWARE_VERSION[] = "0.3.2";
 const int DISPLAY_WIDTH = 400;
 const int DISPLAY_HEIGHT = 300;
 int curr_url = 0;

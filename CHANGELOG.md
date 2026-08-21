@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2 - 2026-08-21
+
+- Updated the classic AirPlay RAOP Bonjour TXT record for current iOS discovery.
+- Corrected the RAOP protocol version from `vn=3` to `vn=65537`.
+- Added the standard password, audio, feature and server-version discovery fields.
+- Log the published `_raop._tcp` instance and port for discovery diagnostics.
+
 ## 0.3.1 - 2026-08-21
 
 - Fixed missing clock and spectrum updates when AirPlay consumed memory before the original UI tasks were created.
