@@ -288,6 +288,9 @@ esp_err_t raop_init(const raop_config_t *config, raop_handle_t **out_handle) {
 
     if (!handle->raop_ctx) {
         s_handle = NULL;
+        if (config->mdns_mode == RAOP_MDNS_MANAGED) {
+            mdns_free();
+        }
         free(handle);
         return ESP_ERR_RAOP_NETWORK_FAILED;
     }

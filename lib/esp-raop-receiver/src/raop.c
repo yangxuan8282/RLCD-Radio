@@ -136,16 +136,38 @@ struct raop_ctx_s *raop_create(uint32_t host, char *name,
 	// Only register mDNS if managed mode
 	if (mdns_mode == RAOP_MDNS_MANAGED) {
 		LOG_INFO("starting mDNS with %s", id);
-		mdns_service_add(id, "_raop", "_tcp", ctx->port, (mdns_txt_item_t*) txt, sizeof(txt) / sizeof(mdns_txt_item_t));
+		esp_err_t mdns_err = mdns_service_add(id, "_raop", "_tcp", ctx->port,
+											 (mdns_txt_item_t*) txt, sizeof(txt) / sizeof(mdns_txt_item_t));
+		if (mdns_err != ESP_OK) {
+			LOG_ERROR("cannot register RAOP mDNS service: %s", esp_err_to_name(mdns_err));
+			closesocket(ctx->sock);
+			free(ctx);
+			return NULL;
+		}
 	} else {
 		LOG_INFO("mDNS external mode - service registration skipped for %s", id);
 	}
 
-  ctx->xTaskBuffer = (StaticTask_t*) heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+	ctx->xTaskBuffer = (StaticTask_t*) heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+	if (!ctx->xTaskBuffer) {
+		LOG_ERROR("cannot allocate RTSP task control block", NULL);
+		mdns_service_remove("_raop", "_tcp");
+		closesocket(ctx->sock);
+		free(ctx);
+		return NULL;
+	}
 	BaseType_t core_id = (CONFIG_PTHREAD_TASK_CORE_DEFAULT == -1) ? tskNO_AFFINITY : CONFIG_PTHREAD_TASK_CORE_DEFAULT;
 	ctx->thread = xTaskCreateStaticPinnedToCore( (TaskFunction_t) rtsp_thread, "RTSP", RTSP_STACK_SIZE, ctx,
                                              ESP_TASK_PRIO_MIN + 2, ctx->xStack, ctx->xTaskBuffer,
                                              core_id);
+	if (!ctx->thread) {
+		LOG_ERROR("cannot create RTSP task", NULL);
+		free(ctx->xTaskBuffer);
+		mdns_service_remove("_raop", "_tcp");
+		closesocket(ctx->sock);
+		free(ctx);
+		return NULL;
+	}
 
 	return ctx;
 }

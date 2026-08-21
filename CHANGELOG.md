@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1 - 2026-08-21
+
+- Fixed missing clock and spectrum updates when AirPlay consumed memory before the original UI tasks were created.
+- Start and verify the ADC, NTP and FFT tasks before initializing the AirPlay receiver.
+- Retry NTP every five seconds until the first successful synchronization.
+- Report RAOP mDNS registration and RTSP task creation failures instead of reporting a false successful startup.
+
 ## 0.3.0 - 2026-08-21
 
 - Added AirPlay 1 / RAOP audio receiving with ALAC decoding and mDNS discovery.

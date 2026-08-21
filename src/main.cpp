@@ -33,7 +33,7 @@
 
 const int BUTTON_PIN = 0;
 const unsigned long DEBOUNCE_DELAY = 50;
-static constexpr char FIRMWARE_VERSION[] = "0.3.0";
+static constexpr char FIRMWARE_VERSION[] = "0.3.1";
 const int DISPLAY_WIDTH = 400;
 const int DISPLAY_HEIGHT = 300;
 int curr_url = 0;
@@ -99,6 +99,7 @@ struct AirPlayMessage
 QueueHandle_t airplayQueue = nullptr;
 raop_handle_t *airplayHandle = nullptr;
 volatile bool airplaySessionActive = false;
+volatile bool ntpSynchronized = false;
 
 struct StationPreset
 {
@@ -475,9 +476,19 @@ void Time_UpdateTask(void *pvParameters)
   {
     static int ntp_sync_counter = 0;
     uint32_t a_br = audio.getBitRate() / 1024;
-    if (ntp_sync_counter++ > 60)
+    const int retryInterval = ntpSynchronized ? 60 : 5;
+    if (ntp_sync_counter++ >= retryInterval)
     {
-      timeClient.update();
+      if (timeClient.forceUpdate())
+      {
+        if (!ntpSynchronized)
+          Serial.println("NTP 后台同步成功");
+        ntpSynchronized = true;
+      }
+      else if (!ntpSynchronized)
+      {
+        Serial.println("NTP 后台同步失败，5 秒后重试");
+      }
       ntp_sync_counter = 0;
     }
     String currentTime = timeClient.getFormattedTime();
@@ -905,15 +916,14 @@ void setup()
     {
       Serial.printf("电台 %d: %s | %s\n", i, stationNames[i].c_str(), stations[i].c_str());
     }
-    bool ntpUpdated = false;
-    for (int attempt = 0; attempt < 10 && !ntpUpdated; attempt++)
+    for (int attempt = 0; attempt < 10 && !ntpSynchronized; attempt++)
     {
-      ntpUpdated = timeClient.forceUpdate();
-      if (ntpUpdated)
+      ntpSynchronized = timeClient.forceUpdate();
+      if (ntpSynchronized)
         break;
       delay(500);
     }
-    Serial.println(ntpUpdated ? "NTP 同步成功" : "NTP 同步失败，稍后重试");
+    Serial.println(ntpSynchronized ? "NTP 同步成功" : "NTP 同步失败，将在后台重试");
   }
   else
   {
@@ -953,10 +963,20 @@ void setup()
     startAudio(stations[curr_url].c_str());
     digitalWrite(46, HIGH);
   }
-  startAirPlayReceiver();
-  xTaskCreatePinnedToCore(Adc_LoopTask, "ADC_Task", 3000, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(Time_UpdateTask, "Time_Task", 4096, NULL, 2, NULL, 0);
-  xTaskCreatePinnedToCore(Spectrum_Analyzer_Task, "Spectrum_Task", 4096, NULL, 1, NULL, 0);
+  BaseType_t adcTask = xTaskCreatePinnedToCore(Adc_LoopTask, "ADC_Task", 3000, NULL, 1, NULL, 1);
+  BaseType_t timeTask = xTaskCreatePinnedToCore(Time_UpdateTask, "Time_Task", 4096, NULL, 2, NULL, 0);
+  BaseType_t spectrumTask = xTaskCreatePinnedToCore(Spectrum_Analyzer_Task, "Spectrum_Task", 4096, NULL, 1, NULL, 0);
+  Serial.printf("任务启动: ADC=%s NTP=%s FFT=%s | 内部空闲=%u 最大块=%u\n",
+                adcTask == pdPASS ? "OK" : "FAIL",
+                timeTask == pdPASS ? "OK" : "FAIL",
+                spectrumTask == pdPASS ? "OK" : "FAIL",
+                heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+
+  if (adcTask != pdPASS || timeTask != pdPASS || spectrumTask != pdPASS)
+    Serial.println("基础任务创建失败，AirPlay 将保持关闭以保留系统资源");
+  else
+    startAirPlayReceiver();
 }
 
 void handleButton()
