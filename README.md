@@ -22,6 +22,8 @@
 - 修复音频数据仍正常时看门狗误重连的问题。
 - 修复音频解码后 SPI DMA 内存不足导致的重启。
 - 修正 ES8311 音量范围和默认音量处理。
+- 增加 AirPlay 1 / RAOP 音频接收，可从 iPhone、iPad 或 Mac 投放音乐。
+- AirPlay 连接时自动暂停网络电台，断开后恢复原电台，并复用屏幕频谱显示。
 
 ## 硬件
 
@@ -116,6 +118,26 @@ esptool.py --chip esp32s3 erase-flash
 
 设备连接家庭 Wi-Fi 后，可以通过屏幕显示的局域网 IP 再次进入 Web 配置页面。开发板上的实体按键用于切换电台，当前音量通过 Web 页面调整。
 
+## AirPlay 音频接收
+
+设备连接家庭 Wi-Fi 后，默认会在同一局域网内发布名为 `RLCD Radio` 的
+AirPlay 接收器。在 iPhone、iPad 或 Mac 的音频输出菜单中选择该设备即可投放：
+
+```text
+手机或电脑 -> AirPlay -> RLCD Radio
+```
+
+Web 配置页面可以启用或关闭 AirPlay，并修改接收器名称。AirPlay 会话建立后，
+固件会停止当前网络电台并播放投放的 ALAC 音频；暂停投放时保持 AirPlay 模式，
+真正断开后自动恢复之前选择的电台。投放期间实体切台按键暂时禁用。
+
+当前实现是 **AirPlay 1 / RAOP 音频接收**，支持单设备音乐投放、软件音量、
+歌曲元数据和频谱显示，不包含 AirPlay 2 的多房间同步、HomeKit 配对和 PTP
+时钟功能。发送设备与开发板必须位于允许 mDNS 和局域网 UDP 通信的同一网络。
+
+AirPlay 支持基于 `jptrsn/esp-raop-receiver`，其代码按 GPLv3 分发。具体版本、
+许可证和第三方来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 ## GitHub Actions
 
 仓库中的 GitHub Actions 会在 push、pull request 和手动触发时执行 headless 构建。
@@ -131,8 +153,8 @@ SHA256SUMS.txt
 发布示例：
 
 ```sh
-git tag v0.2.4
-git push origin v0.2.4
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 ## 更新记录

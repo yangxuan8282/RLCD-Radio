@@ -1,0 +1,17 @@
+{
+  "name": "esp-raop-receiver",
+  "version": "0.1.0",
+  "description": "AirPlay 1 / RAOP receiver component for ESP32",
+  "license": "GPL-3.0-only",
+  "build": {
+    "srcFilter": [
+      "+<*>",
+      "+<*/>",
+      "+<**/*>"
+    ],
+    "flags": [
+      "-I private_include",
+      "-I src"
+    ]
+  }
+}

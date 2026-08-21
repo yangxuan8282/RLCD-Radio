@@ -19,6 +19,9 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include "arduinoFFT.h"
+#include <ESPmDNS.h>
+#include "esp_raop_receiver.h"
+#include <freertos/queue.h>
 
 #define I2S_DOUT 8
 #define I2S_BCLK 9
@@ -30,7 +33,7 @@
 
 const int BUTTON_PIN = 0;
 const unsigned long DEBOUNCE_DELAY = 50;
-static constexpr char FIRMWARE_VERSION[] = "0.2.4";
+static constexpr char FIRMWARE_VERSION[] = "0.3.0";
 const int DISPLAY_WIDTH = 400;
 const int DISPLAY_HEIGHT = 300;
 int curr_url = 0;
@@ -69,6 +72,33 @@ String stations[MAX_STATIONS];
 String stationNames[MAX_STATIONS];
 int stationsCount = 0;
 int defaultVolume = 70;
+bool airplayEnabled = true;
+String airplayName = "RLCD Radio";
+String airplayHostname;
+
+enum class AirPlayMessageType : uint8_t
+{
+  Connected,
+  Disconnected,
+  Buffering,
+  Playing,
+  Paused,
+  Stopped,
+  Stalled,
+  Metadata
+};
+
+struct AirPlayMessage
+{
+  AirPlayMessageType type;
+  char artist[96];
+  char album[96];
+  char title[128];
+};
+
+QueueHandle_t airplayQueue = nullptr;
+raop_handle_t *airplayHandle = nullptr;
+volatile bool airplaySessionActive = false;
 
 struct StationPreset
 {
@@ -103,8 +133,21 @@ void showCurrentStation()
   Lvgl_unlock();
 }
 
+void showAirPlayStatus(const char *status, const char *detail = "")
+{
+  if (!Lvgl_lock(500))
+    return;
+
+  lv_label_set_text(ui_Label1, "AirPlay");
+  lv_label_set_text(ui_Label2, detail && detail[0] ? detail : status);
+  lv_label_set_text(ui_Label3, "44.1k   STEREO   ALAC");
+  Lvgl_unlock();
+}
+
 void startAudio(const char *url)
 {
+  if (airplaySessionActive)
+    return;
   if (url == nullptr || url[0] == '\0')
   {
     isPlaying = false;
@@ -130,8 +173,186 @@ void audio_eof_stream(const char *info)
   Serial.println(info);
   isPlaying = false;
   vTaskDelay(pdMS_TO_TICKS(500));
-  if (currentStationIsValid())
+  if (!airplaySessionActive && currentStationIsValid())
     startAudio(stations[curr_url].c_str());
+}
+
+void airplayAudioOutput(const uint8_t *data, size_t len, void *userContext)
+{
+  (void)userContext;
+  if (!airplaySessionActive || !data || len < 4)
+    return;
+  audio.writeExternalPcm16(reinterpret_cast<const int16_t *>(data), len / 4);
+}
+
+void queueAirPlayMessage(AirPlayMessageType type, const raop_metadata_t *metadata = nullptr)
+{
+  if (!airplayQueue)
+    return;
+
+  AirPlayMessage message = {};
+  message.type = type;
+  if (metadata)
+  {
+    snprintf(message.artist, sizeof(message.artist), "%s", metadata->artist ? metadata->artist : "");
+    snprintf(message.album, sizeof(message.album), "%s", metadata->album ? metadata->album : "");
+    snprintf(message.title, sizeof(message.title), "%s", metadata->title ? metadata->title : "");
+  }
+  TickType_t wait = type == AirPlayMessageType::Metadata ? 0 : pdMS_TO_TICKS(100);
+  if (xQueueSend(airplayQueue, &message, wait) != pdTRUE)
+    Serial.println("AirPlay 事件队列已满");
+}
+
+void airplayEventHandler(raop_event_t event, void *eventData, void *userContext)
+{
+  (void)userContext;
+  switch (event)
+  {
+  case RAOP_EVENT_CONNECTED:
+    queueAirPlayMessage(AirPlayMessageType::Connected);
+    break;
+  case RAOP_EVENT_DISCONNECTED:
+    queueAirPlayMessage(AirPlayMessageType::Disconnected);
+    break;
+  case RAOP_EVENT_BUFFERING:
+    queueAirPlayMessage(AirPlayMessageType::Buffering);
+    break;
+  case RAOP_EVENT_PLAYING:
+    queueAirPlayMessage(AirPlayMessageType::Playing);
+    break;
+  case RAOP_EVENT_PAUSED:
+    queueAirPlayMessage(AirPlayMessageType::Paused);
+    break;
+  case RAOP_EVENT_STOPPED:
+    queueAirPlayMessage(AirPlayMessageType::Stopped);
+    break;
+  case RAOP_EVENT_STALLED:
+    queueAirPlayMessage(AirPlayMessageType::Stalled);
+    break;
+  case RAOP_EVENT_METADATA:
+    queueAirPlayMessage(AirPlayMessageType::Metadata, static_cast<raop_metadata_t *>(eventData));
+    break;
+  default:
+    break;
+  }
+}
+
+void processAirPlayMessages()
+{
+  if (!airplayQueue)
+    return;
+
+  AirPlayMessage message;
+  while (xQueueReceive(airplayQueue, &message, 0) == pdTRUE)
+  {
+    switch (message.type)
+    {
+    case AirPlayMessageType::Connected:
+      Serial.println("AirPlay 客户端已连接，暂停网络电台");
+      isPlaying = false;
+      airplaySessionActive = audio.beginExternalPcm(44100);
+      if (airplaySessionActive)
+      {
+        digitalWrite(46, HIGH);
+        showAirPlayStatus("已连接", "正在缓冲...");
+      }
+      else
+      {
+        Serial.println("AirPlay PCM 输出初始化失败");
+        showAirPlayStatus("初始化失败");
+        if (currentStationIsValid())
+        {
+          showCurrentStation();
+          startAudio(stations[curr_url].c_str());
+        }
+      }
+      break;
+    case AirPlayMessageType::Disconnected:
+      Serial.println("AirPlay 客户端已断开，恢复网络电台");
+      audio.endExternalPcm();
+      airplaySessionActive = false;
+      if (currentStationIsValid())
+      {
+        showCurrentStation();
+        startAudio(stations[curr_url].c_str());
+      }
+      break;
+    case AirPlayMessageType::Buffering:
+      if (!airplaySessionActive)
+        break;
+      showAirPlayStatus("正在缓冲");
+      break;
+    case AirPlayMessageType::Playing:
+      if (!airplaySessionActive)
+        break;
+      showAirPlayStatus("正在播放");
+      break;
+    case AirPlayMessageType::Paused:
+      if (!airplaySessionActive)
+        break;
+      showAirPlayStatus("已暂停");
+      break;
+    case AirPlayMessageType::Stopped:
+      if (!airplaySessionActive)
+        break;
+      showAirPlayStatus("播放已停止");
+      break;
+    case AirPlayMessageType::Stalled:
+      if (!airplaySessionActive)
+        break;
+      showAirPlayStatus("网络卡顿");
+      break;
+    case AirPlayMessageType::Metadata:
+    {
+      if (!airplaySessionActive)
+        break;
+      String detail;
+      if (message.artist[0])
+        detail = String(message.artist) + " - ";
+      detail += message.title[0] ? message.title : "正在播放";
+      showAirPlayStatus("正在播放", detail.c_str());
+      break;
+    }
+    }
+  }
+}
+
+bool startAirPlayReceiver()
+{
+  if (!airplayEnabled || WiFi.status() != WL_CONNECTED)
+    return false;
+
+  airplayQueue = xQueueCreate(8, sizeof(AirPlayMessage));
+  if (!airplayQueue)
+  {
+    Serial.println("AirPlay 事件队列创建失败");
+    return false;
+  }
+
+  String mac = WiFi.macAddress();
+  mac.replace(":", "");
+  airplayHostname = "rlcd-radio-" + mac.substring(mac.length() - 6);
+  airplayHostname.toLowerCase();
+
+  raop_config_t config = {};
+  config.device_name = airplayName.c_str();
+  config.volume_mode = RAOP_VOLUME_SOFTWARE;
+  config.mdns_mode = RAOP_MDNS_MANAGED;
+  config.mdns_hostname = airplayHostname.c_str();
+  config.audio_output_cb = airplayAudioOutput;
+  config.event_cb = airplayEventHandler;
+
+  esp_err_t err = raop_init(&config, &airplayHandle);
+  if (err != ESP_OK)
+  {
+    Serial.printf("AirPlay 启动失败: %s (0x%x)\n", esp_err_to_name(err), err);
+    vQueueDelete(airplayQueue);
+    airplayQueue = nullptr;
+    return false;
+  }
+
+  Serial.printf("AirPlay 已启用: %s\n", raop_get_device_name(airplayHandle));
+  return true;
 }
 void audio_showstation(const char *info)
 {
@@ -315,7 +536,7 @@ void Spectrum_Analyzer_Task(void *pvParameters)
   const uint32_t RENDER_DELAY_MS = 20;
   for (;;)
   {
-    if (audio.isRunning() && shared_data_ready)
+    if ((audio.isRunning() || audio.isExternalPcmActive()) && shared_data_ready)
     {
       uint32_t current_time = millis();
       if (current_time - last_render_time < RENDER_DELAY_MS)
@@ -463,6 +684,11 @@ void loadConfiguration()
   curr_url = preferences.getInt("curr_url", 0);
   defaultVolume = preferences.getInt("default_vol", 70);
   defaultVolume = constrain(defaultVolume, 0, 100);
+  airplayEnabled = preferences.getBool("airplay_on", true);
+  airplayName = preferences.getString("airplay_name", "RLCD Radio");
+  airplayName.trim();
+  if (airplayName.isEmpty())
+    airplayName = "RLCD Radio";
   stationsCount = preferences.getInt("st_count", 0);
   if (stationsCount < 0 || stationsCount > MAX_STATIONS)
     stationsCount = 0;
@@ -494,7 +720,8 @@ void loadConfiguration()
   preferences.end();
 }
 
-void saveConfiguration(String newSsid, String newPass, String rawStations, String newNtp, int newVolume)
+void saveConfiguration(String newSsid, String newPass, String rawStations, String newNtp,
+                       int newVolume, bool newAirplayEnabled, String newAirplayName)
 {
   newVolume = constrain(newVolume, 0, 100);
   preferences.begin("radio_cfg", false); // RW
@@ -502,6 +729,11 @@ void saveConfiguration(String newSsid, String newPass, String rawStations, Strin
   preferences.putString("pass", newPass);
   preferences.putString("ntp_srv", newNtp);
   preferences.putInt("default_vol", newVolume);
+  newAirplayName.trim();
+  if (newAirplayName.isEmpty())
+    newAirplayName = "RLCD Radio";
+  preferences.putBool("airplay_on", newAirplayEnabled);
+  preferences.putString("airplay_name", newAirplayName.substring(0, 63));
   int idx = 0;
   int fromPos = 0;
   while (idx < MAX_STATIONS && fromPos <= rawStations.length())
@@ -563,6 +795,9 @@ void handleRoot()
   html += "<label>NTP 服务器:</label><input type='text' name='ntp' value='" + htmlEscape(ntpServer) + "'>";
   html += "<div class='vol-container'><label>音量:</label><span id='volVal'>" + String(defaultVolume) + "</span></div>";
   html += "<input type='range' name='volume' min='0' max='100' value='" + String(defaultVolume) + "' oninput='vol(this.value);'>";
+  html += "<label><input style='width:auto' type='checkbox' name='airplay' value='1'" + String(airplayEnabled ? " checked" : "") + "> 启用 AirPlay 音频接收</label>";
+  html += "<label>AirPlay 接收器名称:</label><input type='text' maxlength='63' name='airplay_name' value='" + htmlEscape(airplayName) + "'>";
+  html += "<p style='color:#aaa'>AirPlay 会在投放期间暂停网络电台，断开后自动恢复。</p>";
   html += "<label>电台列表（名称|地址，每行一个）:</label>";
   html += "<textarea name='stations' rows='10'>";
   for (int i = 0; i < stationsCount; i++)
@@ -594,14 +829,17 @@ void handleVol()
 
 void handleSave()
 {
-  if (server.hasArg("ssid") && server.hasArg("pass") && server.hasArg("stations") && server.hasArg("ntp") && server.hasArg("volume"))
+  if (server.hasArg("ssid") && server.hasArg("pass") && server.hasArg("stations") && server.hasArg("ntp") && server.hasArg("volume") && server.hasArg("airplay_name"))
   {
     String newSsid = server.arg("ssid");
     String newPass = server.arg("pass");
     String newStations = server.arg("stations");
     String newNtp = server.arg("ntp");
     int newVolume = server.arg("volume").toInt();
-    saveConfiguration(newSsid, newPass, newStations, newNtp, newVolume);
+    bool newAirplayEnabled = server.hasArg("airplay");
+    String newAirplayName = server.arg("airplay_name");
+    saveConfiguration(newSsid, newPass, newStations, newNtp, newVolume,
+                      newAirplayEnabled, newAirplayName);
     server.send(200, "text/html", "<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body><h3>保存完成，设备即将重启。</h3></body></html>");
     delay(2000);
     ESP.restart();
@@ -715,6 +953,7 @@ void setup()
     startAudio(stations[curr_url].c_str());
     digitalWrite(46, HIGH);
   }
+  startAirPlayReceiver();
   xTaskCreatePinnedToCore(Adc_LoopTask, "ADC_Task", 3000, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(Time_UpdateTask, "Time_Task", 4096, NULL, 2, NULL, 0);
   xTaskCreatePinnedToCore(Spectrum_Analyzer_Task, "Spectrum_Task", 4096, NULL, 1, NULL, 0);
@@ -738,6 +977,8 @@ void handleButton()
       lastButtonState = reading;
       if (lastButtonState == LOW)
       {
+        if (airplaySessionActive)
+          return;
         curr_url++;
         if (curr_url >= stationsCount)
           curr_url = 0;
@@ -757,9 +998,10 @@ void loop()
 {
   server.handleClient();
   ArduinoOTA.handle();
+  processAirPlayMessages();
   audio.loop();
   handleButton();
-  if (isPlaying && currentStationIsValid() && (millis() - lastDataTime > RECONNECT_TIMEOUT))
+  if (!airplaySessionActive && isPlaying && currentStationIsValid() && (millis() - lastDataTime > RECONNECT_TIMEOUT))
   {
     Serial.println("音频无数据，正在重新连接...");
     startAudio(stations[curr_url].c_str());

@@ -145,6 +145,10 @@ class Audio {
     uint32_t         getAudioFilePosition();
     bool             setAudioFilePosition(uint32_t pos);
     uint16_t         getVUlevel();
+    bool             beginExternalPcm(uint32_t sampleRate = 44100);
+    void             endExternalPcm();
+    size_t           writeExternalPcm16(const int16_t* samples, size_t frames);
+    bool             isExternalPcmActive() const { return m_f_external_pcm; }
     uint32_t         inBufferFilled();  // returns the number of stored bytes in the inputbuffer
     uint32_t         inBufferFree();    // returns the number of free bytes in the inputbuffer
     uint32_t         getInBufferSize(); // returns the size of the inputbuffer in bytes
@@ -461,6 +465,8 @@ class Audio {
     bool           m_f_reset_m3u8Codec = true;      // reset codec for m3u8 stream
     bool           m_f_connectionClose = false;     // set in parseHttpResponseHeader
     bool           m_f_i2s_channel_enabled = false; // true if enabled
+    bool           m_f_external_pcm = false;        // external 16-bit stereo PCM owns the output
+    int32_t        m_externalPcmBuffer[1024] = {};  // up to 512 stereo frames
     uint32_t       m_audioFileDuration = 0;         // seconds
     uint32_t       m_audioCurrentTime = 0;          // seconds
     uint32_t       m_audioDataStart = 0;            // in bytes

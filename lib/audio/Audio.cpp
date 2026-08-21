@@ -3268,6 +3268,58 @@ uint32_t Audio::stopSong() {
     xSemaphoreGive(mutex_audioTaskIsDecoding);
     return currTime;
 }
+
+bool Audio::beginExternalPcm(uint32_t sampleRate) {
+    stopSong();
+    if (!m_f_I2S_init || sampleRate < 8000) return false;
+
+    xSemaphoreTake(mutex_audioTask, portMAX_DELAY);
+    m_f_external_pcm = true;
+    if (m_i2s_items.sampleRate != sampleRate) setSampleRate(sampleRate);
+    zeroI2Sbuff();
+    xSemaphoreGive(mutex_audioTask);
+    return true;
+}
+
+void Audio::endExternalPcm() {
+    xSemaphoreTake(mutex_audioTask, portMAX_DELAY);
+    m_f_external_pcm = false;
+    zeroI2Sbuff();
+    xSemaphoreGive(mutex_audioTask);
+}
+
+size_t Audio::writeExternalPcm16(const int16_t* samples, size_t frames) {
+    if (!samples || !frames || !m_f_external_pcm || !m_f_I2S_init) return 0;
+
+    size_t totalWritten = 0;
+    xSemaphoreTake(mutex_audioTask, portMAX_DELAY);
+    while (frames && m_f_external_pcm) {
+        const size_t chunkFrames = std::min(frames, sizeof(m_externalPcmBuffer) / (2 * sizeof(m_externalPcmBuffer[0])));
+        for (size_t i = 0; i < chunkFrames * 2; ++i) {
+            m_externalPcmBuffer[i] = static_cast<int32_t>(samples[i]) * 65536;
+        }
+
+        audio_process_raw_samples(m_externalPcmBuffer, static_cast<int16_t>(chunkFrames));
+        bool continueI2S = true;
+        audio_process_i2s(m_externalPcmBuffer, static_cast<int16_t>(chunkFrames), &continueI2S);
+        if (!continueI2S) break;
+
+        size_t bytesWritten = 0;
+        const size_t bytesToWrite = chunkFrames * 2 * sizeof(int32_t);
+        esp_err_t err = i2s_channel_write(m_i2s_tx_handle, m_externalPcmBuffer,
+                                          bytesToWrite, &bytesWritten,
+                                          pdMS_TO_TICKS(50));
+        if (err != ESP_OK && err != ESP_ERR_TIMEOUT) break;
+
+        const size_t writtenFrames = bytesWritten / (2 * sizeof(int32_t));
+        totalWritten += writtenFrames;
+        if (writtenFrames < chunkFrames) break;
+        samples += chunkFrames * 2;
+        frames -= chunkFrames;
+    }
+    xSemaphoreGive(mutex_audioTask);
+    return totalWritten;
+}
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 bool Audio::pauseResume() {
     xSemaphoreTake(mutex_audioTask, 0.3 * configTICK_RATE_HZ);

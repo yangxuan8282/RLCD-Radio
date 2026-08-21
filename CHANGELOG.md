@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 - 2026-08-21
+
+- Added AirPlay 1 / RAOP audio receiving with ALAC decoding and mDNS discovery.
+- Added automatic source switching: AirPlay pauses the radio and disconnecting resumes the selected station.
+- Reused the existing ES8311, I2S output and FFT display path for AirPlay PCM.
+- Added AirPlay enable and receiver-name settings to the Chinese WebUI.
+- Added upstream attribution and GPLv3 notices for the vendored RAOP component.
+
 ## 0.2.4 - 2026-08-18
 
 - Added the firmware version to the WebUI title and configuration page.
