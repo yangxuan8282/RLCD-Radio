@@ -135,8 +135,6 @@ typedef struct rtp_s {
 	pthread_t thread;
 #else
 	TaskHandle_t thread, joiner;
-	StaticTask_t *xTaskBuffer;
-    StackType_t xStack[RTP_STACK_SIZE] __attribute__ ((aligned (4)));
 #endif
 
 	struct alac_codec_s *alac_codec;
@@ -213,7 +211,7 @@ rtp_resp_t rtp_init(struct in_addr host, int latency, char *aeskey, char *aesiv,
 	char *arg;
 	int fmtp[12];
 	bool rc = true;
-	rtp_t *ctx = heap_caps_calloc(1, sizeof(rtp_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+	rtp_t *ctx = heap_caps_calloc(1, sizeof(rtp_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 	rtp_resp_t resp = { 0, 0, 0, NULL };
 
 	if (!ctx) return resp;
@@ -278,11 +276,13 @@ rtp_resp_t rtp_init(struct in_addr host, int latency, char *aeskey, char *aesiv,
 #ifdef WIN32
 	pthread_create(&ctx->thread, NULL, rtp_thread_func, (void *) ctx);
 #else
-	ctx->xTaskBuffer = (StaticTask_t*) heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 	BaseType_t core_id = (CONFIG_PTHREAD_TASK_CORE_DEFAULT == -1) ? tskNO_AFFINITY : CONFIG_PTHREAD_TASK_CORE_DEFAULT;
-	ctx->thread = xTaskCreateStaticPinnedToCore( (TaskFunction_t) rtp_thread_func, "RTP_thread", RTP_STACK_SIZE, ctx,
-																							CONFIG_ESP32_PTHREAD_TASK_PRIO_DEFAULT + 1, ctx->xStack, ctx->xTaskBuffer,
-																							core_id);
+	BaseType_t task_result = xTaskCreatePinnedToCoreWithCaps(
+		(TaskFunction_t) rtp_thread_func, "RTP_thread", RTP_STACK_SIZE, ctx,
+		CONFIG_ESP32_PTHREAD_TASK_PRIO_DEFAULT + 1, &ctx->thread, core_id,
+		MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+	rc &= task_result == pdPASS;
+	if (task_result != pdPASS) ctx->running = false;
 #endif
 
 	// cleanup everything if we failed
@@ -312,8 +312,7 @@ void rtp_end(rtp_t *ctx)
 		pthread_join(ctx->thread, NULL);
 #else
 		ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
-		vTaskDelete(ctx->thread);
-		SAFE_PTR_FREE(ctx->xTaskBuffer);
+		vTaskDeleteWithCaps(ctx->thread);
 #endif
 	}
 

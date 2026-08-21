@@ -33,7 +33,7 @@
 
 const int BUTTON_PIN = 0;
 const unsigned long DEBOUNCE_DELAY = 50;
-static constexpr char FIRMWARE_VERSION[] = "0.3.2";
+static constexpr char FIRMWARE_VERSION[] = "0.3.3";
 const int DISPLAY_WIDTH = 400;
 const int DISPLAY_HEIGHT = 300;
 int curr_url = 0;
@@ -323,7 +323,7 @@ bool startAirPlayReceiver()
   if (!airplayEnabled || WiFi.status() != WL_CONNECTED)
     return false;
 
-  airplayQueue = xQueueCreate(8, sizeof(AirPlayMessage));
+  airplayQueue = xQueueCreateWithCaps(8, sizeof(AirPlayMessage), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (!airplayQueue)
   {
     Serial.println("AirPlay 事件队列创建失败");
@@ -347,7 +347,7 @@ bool startAirPlayReceiver()
   if (err != ESP_OK)
   {
     Serial.printf("AirPlay 启动失败: %s (0x%x)\n", esp_err_to_name(err), err);
-    vQueueDelete(airplayQueue);
+    vQueueDeleteWithCaps(airplayQueue);
     airplayQueue = nullptr;
     return false;
   }
@@ -957,26 +957,31 @@ void setup()
   es.setVolume(defaultVolume);
   es.setBitsPerSample(16);
   preferences.begin("radio_cfg", false);
+  BaseType_t adcTask = xTaskCreatePinnedToCoreWithCaps(
+      Adc_LoopTask, "ADC_Task", 3000, NULL, 1, NULL, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  BaseType_t timeTask = xTaskCreatePinnedToCoreWithCaps(
+      Time_UpdateTask, "Time_Task", 4096, NULL, 2, NULL, 0, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  BaseType_t spectrumTask = xTaskCreatePinnedToCoreWithCaps(
+      Spectrum_Analyzer_Task, "Spectrum_Task", 4096, NULL, 1, NULL, 0, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  Serial.printf("任务启动: ADC=%s NTP=%s FFT=%s | 内部空闲=%u 最大块=%u PSRAM空闲=%u\n",
+                adcTask == pdPASS ? "OK" : "FAIL",
+                timeTask == pdPASS ? "OK" : "FAIL",
+                spectrumTask == pdPASS ? "OK" : "FAIL",
+                heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
+  if (adcTask != pdPASS || timeTask != pdPASS || spectrumTask != pdPASS)
+    Serial.println("基础任务创建失败，AirPlay 将保持关闭以保留系统资源");
+  else
+    startAirPlayReceiver();
+
   if (currentStationIsValid())
   {
     showCurrentStation();
     startAudio(stations[curr_url].c_str());
     digitalWrite(46, HIGH);
   }
-  BaseType_t adcTask = xTaskCreatePinnedToCore(Adc_LoopTask, "ADC_Task", 3000, NULL, 1, NULL, 1);
-  BaseType_t timeTask = xTaskCreatePinnedToCore(Time_UpdateTask, "Time_Task", 4096, NULL, 2, NULL, 0);
-  BaseType_t spectrumTask = xTaskCreatePinnedToCore(Spectrum_Analyzer_Task, "Spectrum_Task", 4096, NULL, 1, NULL, 0);
-  Serial.printf("任务启动: ADC=%s NTP=%s FFT=%s | 内部空闲=%u 最大块=%u\n",
-                adcTask == pdPASS ? "OK" : "FAIL",
-                timeTask == pdPASS ? "OK" : "FAIL",
-                spectrumTask == pdPASS ? "OK" : "FAIL",
-                heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-
-  if (adcTask != pdPASS || timeTask != pdPASS || spectrumTask != pdPASS)
-    Serial.println("基础任务创建失败，AirPlay 将保持关闭以保留系统资源");
-  else
-    startAirPlayReceiver();
 }
 
 void handleButton()

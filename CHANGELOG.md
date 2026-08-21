@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.3 - 2026-08-21
+
+- Fixed AirPlay being disabled because the FFT task could not allocate a contiguous internal-RAM stack.
+- Moved the application background-task stacks and RAOP worker-task stacks to PSRAM.
+- Moved the large RAOP RTSP/RTP contexts and AirPlay event queue to PSRAM.
+- Reserve background tasks and the AirPlay listener before starting TLS radio playback.
+
 ## 0.3.2 - 2026-08-21
 
 - Updated the classic AirPlay RAOP Bonjour TXT record for current iOS discovery.

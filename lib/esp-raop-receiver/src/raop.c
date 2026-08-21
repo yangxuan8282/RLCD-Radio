@@ -33,8 +33,6 @@ typedef struct raop_ctx_s {
 	struct in_addr peer;	// IP of the iDevice (RAOP sender)
 	bool running;
 	TaskHandle_t thread, joiner;
-	StaticTask_t *xTaskBuffer;
-	StackType_t xStack[RTSP_STACK_SIZE] __attribute__ ((aligned (4)));
 	bool abort;
 	unsigned char mac[6];
 	int latency;
@@ -51,8 +49,6 @@ typedef struct raop_ctx_s {
 		u16_t				port;
 		bool running;
 		TaskHandle_t thread;
-		StaticTask_t *xTaskBuffer;
-		StackType_t xStack[SEARCH_STACK_SIZE] __attribute__ ((aligned (4)));;
 		SemaphoreHandle_t destroy_mutex;
 	} active_remote;
 	void *owner;
@@ -79,7 +75,7 @@ struct raop_ctx_s *raop_create(uint32_t host, char *name,
 						unsigned char mac[6], int latency,
 						raop_cmd_cb_t cmd_cb, raop_data_cb_t data_cb,
 						raop_mdns_mode_t mdns_mode) {
-	struct raop_ctx_s *ctx = heap_caps_malloc(sizeof(struct raop_ctx_s), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+	struct raop_ctx_s *ctx = heap_caps_malloc(sizeof(struct raop_ctx_s), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 	struct sockaddr_in addr;
 	char id[64];
 
@@ -151,21 +147,13 @@ struct raop_ctx_s *raop_create(uint32_t host, char *name,
 		LOG_INFO("mDNS external mode - service registration skipped for %s", id);
 	}
 
-	ctx->xTaskBuffer = (StaticTask_t*) heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-	if (!ctx->xTaskBuffer) {
-		LOG_ERROR("cannot allocate RTSP task control block", NULL);
-		mdns_service_remove("_raop", "_tcp");
-		closesocket(ctx->sock);
-		free(ctx);
-		return NULL;
-	}
 	BaseType_t core_id = (CONFIG_PTHREAD_TASK_CORE_DEFAULT == -1) ? tskNO_AFFINITY : CONFIG_PTHREAD_TASK_CORE_DEFAULT;
-	ctx->thread = xTaskCreateStaticPinnedToCore( (TaskFunction_t) rtsp_thread, "RTSP", RTSP_STACK_SIZE, ctx,
-                                             ESP_TASK_PRIO_MIN + 2, ctx->xStack, ctx->xTaskBuffer,
-                                             core_id);
-	if (!ctx->thread) {
+	BaseType_t task_result = xTaskCreatePinnedToCoreWithCaps(
+		(TaskFunction_t) rtsp_thread, "RTSP", RTSP_STACK_SIZE, ctx,
+		ESP_TASK_PRIO_MIN + 2, &ctx->thread, core_id,
+		MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+	if (task_result != pdPASS) {
 		LOG_ERROR("cannot create RTSP task", NULL);
-		free(ctx->xTaskBuffer);
 		mdns_service_remove("_raop", "_tcp");
 		closesocket(ctx->sock);
 		free(ctx);
@@ -196,8 +184,7 @@ void raop_delete(struct raop_ctx_s *ctx) {
 	// wait to make sure LWIP if scheduled (avoid issue with NotifyTake)
 	vTaskDelay(100 / portTICK_PERIOD_MS);
 	ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
-	vTaskDelete(ctx->thread);
-	if (ctx->xTaskBuffer) free(ctx->xTaskBuffer);
+	vTaskDeleteWithCaps(ctx->thread);
 
 	// cleanup all session-created items
 	cleanup_rtsp(ctx, true);
@@ -470,10 +457,16 @@ static bool handle_rtsp(raop_ctx_t *ctx, int sock)
 
 		ctx->active_remote.running = true;
 		ctx->active_remote.destroy_mutex = xSemaphoreCreateBinary();
-		ctx->active_remote.xTaskBuffer = (StaticTask_t*) heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-		ctx->active_remote.thread = xTaskCreateStaticPinnedToCore( (TaskFunction_t) search_remote, "search_remote", SEARCH_STACK_SIZE, ctx,
-                                                            ESP_TASK_PRIO_MIN + 2, ctx->active_remote.xStack, ctx->active_remote.xTaskBuffer,
-                                                            tskNO_AFFINITY );
+		BaseType_t search_task = xTaskCreatePinnedToCoreWithCaps(
+			(TaskFunction_t) search_remote, "search_remote", SEARCH_STACK_SIZE, ctx,
+			ESP_TASK_PRIO_MIN + 2, &ctx->active_remote.thread, tskNO_AFFINITY,
+			MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+		if (search_task != pdPASS) {
+			ctx->active_remote.running = false;
+			vSemaphoreDelete(ctx->active_remote.destroy_mutex);
+			ctx->active_remote.destroy_mutex = NULL;
+			LOG_ERROR("cannot create remote control search task", NULL);
+		}
 
 	} else if (!strcmp(method, "SETUP") && ((buf = kd_lookup(headers, "Transport")) != NULL)) {
 		char *p;
@@ -625,8 +618,7 @@ void cleanup_rtsp(raop_ctx_t *ctx, bool abort) {
 		// need to make sure no search is on-going and reclaim task memory
 		ctx->active_remote.running = false;
 		xSemaphoreTake(ctx->active_remote.destroy_mutex, portMAX_DELAY);
-		vTaskDelete(ctx->active_remote.thread);
-		if (ctx->active_remote.xTaskBuffer) free(ctx->active_remote.xTaskBuffer);
+		vTaskDeleteWithCaps(ctx->active_remote.thread);
 		vSemaphoreDelete(ctx->active_remote.destroy_mutex);
 		memset(&ctx->active_remote, 0, sizeof(ctx->active_remote));
 		LOG_INFO("[%p]: Remote search thread aborted", ctx);

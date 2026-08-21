@@ -199,15 +199,23 @@ void audio_buffer_start(void) {
     audio_buf.write_idx = 0;
     audio_buf.start_time = 0;
 
-    xTaskCreatePinnedToCore(
+    BaseType_t task_result = xTaskCreatePinnedToCoreWithCaps(
         audio_output_task,
         "audio_output",
-        4096,
+        6144,
         NULL,
         3,
         &audio_buf.task,
-        1
+        1,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
     );
+
+    if (task_result != pdPASS) {
+        audio_buf.running = false;
+        audio_buf.task = NULL;
+        ESP_LOGE(TAG, "Failed to create audio output task");
+        return;
+    }
 
     ESP_LOGI(TAG, "Audio playback started");
 }
@@ -232,7 +240,7 @@ void audio_buffer_stop(void) {
 
     if (audio_buf.task) {
         vTaskDelay(pdMS_TO_TICKS(100));
-        vTaskDelete(audio_buf.task);
+        vTaskDeleteWithCaps(audio_buf.task);
         audio_buf.task = NULL;
     }
 
