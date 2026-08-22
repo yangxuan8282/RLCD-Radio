@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.4 - 2026-08-22
+
+- Start the network radio before enabling AirPlay, then pause it synchronously when an AirPlay client begins its handshake.
+- Release the radio decoder and TLS resources before the RAOP RSA handshake to avoid fragmented internal-memory allocation failures.
+- Restore network-radio playback after a failed or disconnected AirPlay session.
+- Fixed iOS AirPlay volume control by parsing RAOP volume values and applying clamped software gain to PCM audio.
+- Added AirPlay handshake, heap and volume diagnostics for device-side troubleshooting.
+- Hardware-verified AirPlay discovery, connection, playback, spectrum visualization and iPhone volume control.
+
 ## 0.3.3 - 2026-08-21
 
 - Fixed AirPlay being disabled because the FFT task could not allocate a contiguous internal-RAM stack.
