@@ -33,7 +33,7 @@
 
 const int BUTTON_PIN = 0;
 const unsigned long DEBOUNCE_DELAY = 50;
-static constexpr char FIRMWARE_VERSION[] = "0.3.3";
+static constexpr char FIRMWARE_VERSION[] = "0.3.4";
 const int DISPLAY_WIDTH = 400;
 const int DISPLAY_HEIGHT = 300;
 int curr_url = 0;
@@ -78,6 +78,7 @@ String airplayHostname;
 
 enum class AirPlayMessageType : uint8_t
 {
+  Connecting,
   Connected,
   Disconnected,
   Buffering,
@@ -99,6 +100,7 @@ struct AirPlayMessage
 QueueHandle_t airplayQueue = nullptr;
 raop_handle_t *airplayHandle = nullptr;
 volatile bool airplaySessionActive = false;
+volatile bool airplaySessionPending = false;
 volatile bool ntpSynchronized = false;
 
 struct StationPreset
@@ -147,7 +149,7 @@ void showAirPlayStatus(const char *status, const char *detail = "")
 
 void startAudio(const char *url)
 {
-  if (airplaySessionActive)
+  if (airplaySessionActive || airplaySessionPending)
     return;
   if (url == nullptr || url[0] == '\0')
   {
@@ -174,7 +176,7 @@ void audio_eof_stream(const char *info)
   Serial.println(info);
   isPlaying = false;
   vTaskDelay(pdMS_TO_TICKS(500));
-  if (!airplaySessionActive && currentStationIsValid())
+  if (!airplaySessionActive && !airplaySessionPending && currentStationIsValid())
     startAudio(stations[curr_url].c_str());
 }
 
@@ -209,6 +211,19 @@ void airplayEventHandler(raop_event_t event, void *eventData, void *userContext)
   (void)userContext;
   switch (event)
   {
+  case RAOP_EVENT_CONNECTING:
+  {
+    uint32_t beforeFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    uint32_t beforeLargest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    airplaySessionPending = true;
+    isPlaying = false;
+    audio.stopSong();
+    Serial.printf("AirPlay 握手准备: 内部空闲 %u -> %u, 最大块 %u -> %u\n",
+                  beforeFree, heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                  beforeLargest, heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    queueAirPlayMessage(AirPlayMessageType::Connecting);
+    break;
+  }
   case RAOP_EVENT_CONNECTED:
     queueAirPlayMessage(AirPlayMessageType::Connected);
     break;
@@ -230,6 +245,10 @@ void airplayEventHandler(raop_event_t event, void *eventData, void *userContext)
   case RAOP_EVENT_STALLED:
     queueAirPlayMessage(AirPlayMessageType::Stalled);
     break;
+  case RAOP_EVENT_VOLUME:
+    if (eventData)
+      Serial.printf("AirPlay 接收音量: %.1f%%\n", *static_cast<float *>(eventData) * 100.0f);
+    break;
   case RAOP_EVENT_METADATA:
     queueAirPlayMessage(AirPlayMessageType::Metadata, static_cast<raop_metadata_t *>(eventData));
     break;
@@ -248,10 +267,15 @@ void processAirPlayMessages()
   {
     switch (message.type)
     {
+    case AirPlayMessageType::Connecting:
+      Serial.println("AirPlay 客户端正在握手，网络电台已暂停");
+      showAirPlayStatus("正在连接");
+      break;
     case AirPlayMessageType::Connected:
       Serial.println("AirPlay 客户端已连接，暂停网络电台");
       isPlaying = false;
       airplaySessionActive = audio.beginExternalPcm(44100);
+      airplaySessionPending = false;
       if (airplaySessionActive)
       {
         digitalWrite(46, HIGH);
@@ -270,8 +294,10 @@ void processAirPlayMessages()
       break;
     case AirPlayMessageType::Disconnected:
       Serial.println("AirPlay 客户端已断开，恢复网络电台");
-      audio.endExternalPcm();
+      if (airplaySessionActive)
+        audio.endExternalPcm();
       airplaySessionActive = false;
+      airplaySessionPending = false;
       if (currentStationIsValid())
       {
         showCurrentStation();
@@ -957,6 +983,12 @@ void setup()
   es.setVolume(defaultVolume);
   es.setBitsPerSample(16);
   preferences.begin("radio_cfg", false);
+  if (currentStationIsValid())
+  {
+    showCurrentStation();
+    startAudio(stations[curr_url].c_str());
+    digitalWrite(46, HIGH);
+  }
   BaseType_t adcTask = xTaskCreatePinnedToCoreWithCaps(
       Adc_LoopTask, "ADC_Task", 3000, NULL, 1, NULL, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   BaseType_t timeTask = xTaskCreatePinnedToCoreWithCaps(
@@ -975,13 +1007,6 @@ void setup()
     Serial.println("基础任务创建失败，AirPlay 将保持关闭以保留系统资源");
   else
     startAirPlayReceiver();
-
-  if (currentStationIsValid())
-  {
-    showCurrentStation();
-    startAudio(stations[curr_url].c_str());
-    digitalWrite(46, HIGH);
-  }
 }
 
 void handleButton()
@@ -1002,7 +1027,7 @@ void handleButton()
       lastButtonState = reading;
       if (lastButtonState == LOW)
       {
-        if (airplaySessionActive)
+        if (airplaySessionActive || airplaySessionPending)
           return;
         curr_url++;
         if (curr_url >= stationsCount)
@@ -1026,7 +1051,7 @@ void loop()
   processAirPlayMessages();
   audio.loop();
   handleButton();
-  if (!airplaySessionActive && isPlaying && currentStationIsValid() && (millis() - lastDataTime > RECONNECT_TIMEOUT))
+  if (!airplaySessionActive && !airplaySessionPending && isPlaying && currentStationIsValid() && (millis() - lastDataTime > RECONNECT_TIMEOUT))
   {
     Serial.println("音频无数据，正在重新连接...");
     startAudio(stations[curr_url].c_str());

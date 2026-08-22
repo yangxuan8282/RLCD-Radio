@@ -17,7 +17,7 @@ struct raop_handle_s {
     struct raop_ctx_s *raop_ctx;
     raop_config_t config;
     char device_name[64];
-    float volume;
+    volatile float volume;
 };
 
 // ---- Internal callback: translates internal events to public API ----
@@ -35,6 +35,12 @@ static bool internal_cmd_cb(raop_internal_event_t event, ...) {
     switch (event) {
 
         // ---- Internally managed events ----
+
+        case RAOP_INT_PREPARE:
+            if (handle->config.event_cb) {
+                handle->config.event_cb(RAOP_EVENT_CONNECTING, NULL, handle->config.user_ctx);
+            }
+            break;
 
         case RAOP_INT_SETUP: {
             uint8_t **buffer = va_arg(args, uint8_t**);
@@ -119,7 +125,10 @@ static bool internal_cmd_cb(raop_internal_event_t event, ...) {
 
         case RAOP_INT_VOLUME: {
             float volume = (float)va_arg(args, double);
+            if (volume < 0.0f) volume = 0.0f;
+            if (volume > 1.0f) volume = 1.0f;
             handle->volume = volume;
+            ESP_LOGI(TAG, "software volume set to %.1f%%", volume * 100.0f);
 
             if (handle->config.volume_mode == RAOP_VOLUME_SOFTWARE) {
                 // Will be applied in audio output path - store for use there
@@ -202,7 +211,12 @@ static void internal_data_cb(const uint8_t *data, size_t len, uint32_t playtime)
     if (s_handle && s_handle->config.volume_mode == RAOP_VOLUME_SOFTWARE
             && s_handle->volume < 0.99f) {
         static uint8_t scaled[MAX_FRAME_SIZE];
-        apply_software_volume(data, len, scaled, s_handle->volume);
+        if (len > sizeof(scaled)) {
+            ESP_LOGE(TAG, "PCM frame too large for volume buffer: %u", (unsigned)len);
+            return;
+        }
+        float volume = s_handle->volume;
+        apply_software_volume(data, len, scaled, volume);
         if (!audio_buffer_write(scaled, len, playtime)) {
             ESP_LOGW(TAG, "Failed to buffer audio frame");
         }

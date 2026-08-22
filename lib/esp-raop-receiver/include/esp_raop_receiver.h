@@ -35,13 +35,14 @@ typedef enum {
  * @brief RAOP event types
  */
 typedef enum {
+    RAOP_EVENT_CONNECTING,    ///< RTSP client connected, prepare audio resources
     RAOP_EVENT_CONNECTED,     ///< Client connected, session starting
     RAOP_EVENT_DISCONNECTED,  ///< Client disconnected, session ended
     RAOP_EVENT_BUFFERING,     ///< Audio data buffering before playback
     RAOP_EVENT_PLAYING,       ///< Audio playback started
     RAOP_EVENT_STOPPED,       ///< Playback stopped
     RAOP_EVENT_PAUSED,        ///< Playback paused
-    RAOP_EVENT_VOLUME,        ///< Volume changed (hardware mode only)
+    RAOP_EVENT_VOLUME,        ///< Volume changed; event_data points to a float (0.0 to 1.0)
     RAOP_EVENT_METADATA,      ///< Track metadata received
     RAOP_EVENT_ARTWORK,       ///< Album artwork received
     RAOP_EVENT_PROGRESS,      ///< Playback progress update

@@ -16,6 +16,8 @@
 #include <mbedtls/pk.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/ctr_drbg.h>
+#include <mbedtls/error.h>
+#include <math.h>
 
 #include "util.h"
 #include "raop.h"
@@ -32,6 +34,7 @@ typedef struct raop_ctx_s {
 	int sock;               // socket of the above
 	struct in_addr peer;	// IP of the iDevice (RAOP sender)
 	bool running;
+	bool prepared;
 	TaskHandle_t thread, joiner;
 	bool abort;
 	unsigned char mac[6];
@@ -312,6 +315,13 @@ static void rtsp_thread(void *arg) {
 
 			if (sock != -1 && ctx->running) {
 				LOG_INFO("got RTSP connection %u", sock);
+				ctx->prepared = ctx->cmd_cb(RAOP_INT_PREPARE);
+				if (!ctx->prepared) {
+					LOG_ERROR("cannot prepare audio resources for AirPlay", NULL);
+					closesocket(sock);
+					sock = -1;
+					continue;
+				}
 			} else continue;
 		}
 
@@ -538,11 +548,24 @@ static bool handle_rtsp(raop_ctx_t *ctx, int sock)
 		char *p;
 
 		if (body && (p = strcasestr(body, "volume")) != NULL) {
-			float volume;
+			float volume_db = 0.0f;
 
-			sscanf(p, "%*[^:]:%f", &volume);
-			volume = (volume == -144.0) ? 0 : (1 + volume / 30);
-			success = ctx->cmd_cb(RAOP_INT_VOLUME, volume);
+			if (sscanf(p, "%*[^:]:%f", &volume_db) == 1 && isfinite(volume_db)) {
+				float volume;
+				if (volume_db <= -144.0f) {
+					volume = 0.0f;
+				} else {
+					if (volume_db > 0.0f) volume_db = 0.0f;
+					volume = powf(10.0f, volume_db / 20.0f);
+					if (volume < 0.0f) volume = 0.0f;
+					if (volume > 1.0f) volume = 1.0f;
+				}
+				LOG_INFO("AirPlay volume %.2f dB -> %.1f%%", volume_db, volume * 100.0f);
+				success = ctx->cmd_cb(RAOP_INT_VOLUME, volume);
+			} else {
+				LOG_WARN("invalid AirPlay volume parameter: %s", p);
+				success = false;
+			}
 		} else if (body && (p = strcasestr(body, "progress")) != NULL) {
 			int start, current, stop = 0;
 
@@ -611,6 +634,10 @@ void cleanup_rtsp(raop_ctx_t *ctx, bool abort) {
 		rtp_end(ctx->rtp);
 		ctx->rtp = NULL;
 		if (abort) LOG_INFO("[%p]: RTP thread aborted", ctx);
+	}
+
+	if (ctx->prepared) {
+		ctx->prepared = false;
 		ctx->cmd_cb(RAOP_INT_TEARDOWN);
 	}
 
@@ -739,7 +766,11 @@ static char *rsa_apply(unsigned char *input, int inlen, int *outlen, int mode)
 												mbedtls_ctr_drbg_random, &ctr_drbg);
 
 		if (rc != 0) {
-			LOG_ERROR("RSA sign error %d", rc);
+			char error_text[128];
+			mbedtls_strerror(rc, error_text, sizeof(error_text));
+			LOG_ERROR("RSA sign error %d (%s), internal free=%u largest=%u", rc, error_text,
+					  heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+					  heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 			free(outbuf);
 			outbuf = NULL;
 			*outlen = 0;
