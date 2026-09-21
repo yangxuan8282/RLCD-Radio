@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.5 - 2026-09-21
+
+- Added dual physical button control: BOOT (GPIO0) short-press volume up, long-press next station; KEY (GPIO18) short-press volume down, long-press previous station.
+- Added unified `setVolume()` function shared across WebUI, physical buttons and AirPlay.
+- Switched AirPlay volume mode from software PCM scaling to hardware ES8311 register control via `RAOP_VOLUME_HARDWARE`.
+- Added LCD volume feedback overlay with 1.5 s auto-hide.
+- Fixed ES8311 volume curve: ported the `esp_codec_dev` dB-to-register mapping so that 0–100% maps to −50 dB–0 dB instead of the broken linear mapping that caused silence at low volume and clipping at high volume.
+- AirPlay disconnect no longer restores the previous volume, keeping the unified volume setting.
+
 ## 0.3.4 - 2026-08-22
 
 - Start the network radio before enabling AirPlay, then pause it synchronously when an AirPlay client begins its handshake.

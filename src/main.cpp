@@ -31,9 +31,8 @@
 #define I2C_SCL 14
 #define FFT_SAMPLES 256
 
-const int BUTTON_PIN = 0;
-const unsigned long DEBOUNCE_DELAY = 50;
-static constexpr char FIRMWARE_VERSION[] = "0.3.4";
+const int KEY_PIN = 18;
+static constexpr char FIRMWARE_VERSION[] = "0.3.5";
 const int DISPLAY_WIDTH = 400;
 const int DISPLAY_HEIGHT = 300;
 int curr_url = 0;
@@ -72,6 +71,7 @@ String stations[MAX_STATIONS];
 String stationNames[MAX_STATIONS];
 int stationsCount = 0;
 int defaultVolume = 70;
+int currentVolume = 70;
 bool airplayEnabled = true;
 String airplayName = "RLCD Radio";
 String airplayHostname;
@@ -124,6 +124,30 @@ bool isPlaying = false;
 bool currentStationIsValid()
 {
   return curr_url >= 0 && curr_url < stationsCount && !stations[curr_url].isEmpty();
+}
+
+const unsigned long VOLUME_DISPLAY_TIMEOUT = 1500;
+volatile uint32_t volumeDisplayHideTime = 0;
+
+void showVolumeFeedback(int vol)
+{
+  if (!Lvgl_lock(500))
+    return;
+  lv_label_set_text_fmt(ui_Label1, "VOL: %d%%", vol);
+  volumeDisplayHideTime = millis() + VOLUME_DISPLAY_TIMEOUT;
+  Lvgl_unlock();
+}
+
+void setVolume(int vol, bool save = true)
+{
+  vol = constrain(vol, 0, 100);
+  currentVolume = vol;
+  defaultVolume = vol;
+  es.setVolume(vol);
+  if (save)
+    preferences.putInt("default_vol", vol);
+  showVolumeFeedback(vol);
+  Serial.printf("音量: %d%%\n", vol);
 }
 
 void showCurrentStation()
@@ -246,8 +270,6 @@ void airplayEventHandler(raop_event_t event, void *eventData, void *userContext)
     queueAirPlayMessage(AirPlayMessageType::Stalled);
     break;
   case RAOP_EVENT_VOLUME:
-    if (eventData)
-      Serial.printf("AirPlay 接收音量: %.1f%%\n", *static_cast<float *>(eventData) * 100.0f);
     break;
   case RAOP_EVENT_METADATA:
     queueAirPlayMessage(AirPlayMessageType::Metadata, static_cast<raop_metadata_t *>(eventData));
@@ -344,6 +366,16 @@ void processAirPlayMessages()
   }
 }
 
+void airplayVolumeCallback(float volume, void *userContext)
+{
+  (void)userContext;
+  int vol = (int)(volume * 100.0f);
+  vol = constrain(vol, 0, 100);
+  currentVolume = vol;
+  es.setVolume(vol);
+  Serial.printf("AirPlay 音量 -> ES8311: %d%%\n", vol);
+}
+
 bool startAirPlayReceiver()
 {
   if (!airplayEnabled || WiFi.status() != WL_CONNECTED)
@@ -363,11 +395,12 @@ bool startAirPlayReceiver()
 
   raop_config_t config = {};
   config.device_name = airplayName.c_str();
-  config.volume_mode = RAOP_VOLUME_SOFTWARE;
+  config.volume_mode = RAOP_VOLUME_HARDWARE;
   config.mdns_mode = RAOP_MDNS_MANAGED;
   config.mdns_hostname = airplayHostname.c_str();
   config.audio_output_cb = airplayAudioOutput;
   config.event_cb = airplayEventHandler;
+  config.volume_cb = airplayVolumeCallback;
 
   esp_err_t err = raop_init(&config, &airplayHandle);
   if (err != ESP_OK)
@@ -852,11 +885,8 @@ void handleVol()
   {
     String vol = server.arg(0);
     int volume = constrain(vol.toInt(), 0, 100);
-    Serial.print("vol: ");
-    Serial.println(volume);
     server.send(200, "text/plain", "OK");
-    es.setVolume(volume);
-    preferences.putInt("default_vol", volume);
+    setVolume(volume);
   }
   else
   {
@@ -972,7 +1002,8 @@ void setup()
     }
   }
   pinMode(46, OUTPUT); // wzmacniacz audio
-  pinMode(0, INPUT);   // guzik
+  pinMode(BOOT_PIN, INPUT);
+  pinMode(KEY_PIN, INPUT);
   digitalWrite(46, LOW);
   Adc_PortInit();
   Wire.begin(I2C_SDA, I2C_SCL);
@@ -980,6 +1011,7 @@ void setup()
   audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT, I2S_MCLK);
   audio.setVolume(audio.getVolumeSteps());
   es.begin(I2C_SDA, I2C_SCL, 400000);
+  currentVolume = defaultVolume;
   es.setVolume(defaultVolume);
   es.setBitsPerSample(16);
   preferences.begin("radio_cfg", false);
@@ -1009,39 +1041,86 @@ void setup()
     startAirPlayReceiver();
 }
 
-void handleButton()
+void handleButtons()
 {
-  static int lastButtonState = HIGH;
-  static int currentButtonState = HIGH;
-  static unsigned long lastDebounceTime = 0;
-  int reading = digitalRead(BUTTON_PIN);
-  if (reading != currentButtonState)
+  const unsigned long LONG_PRESS_MS = 500;
+  const int VOL_STEP = 15;
+
+  static int lastBootState = HIGH;
+  static unsigned long bootPressStart = 0;
+  static bool bootLongHandled = false;
+
+  static int lastKeyState = HIGH;
+  static unsigned long keyPressStart = 0;
+  static bool keyLongHandled = false;
+
+  unsigned long now = millis();
+  int bootRead = digitalRead(BOOT_PIN);
+  int keyRead = digitalRead(KEY_PIN);
+
+  // ---- BOOT: 短按音量+, 长按下一台 ----
+  if (bootRead == LOW && lastBootState == HIGH)
   {
-    lastDebounceTime = millis();
-    currentButtonState = reading;
+    bootPressStart = now;
+    bootLongHandled = false;
   }
-  if ((millis() - lastDebounceTime) > DEBOUNCE_DELAY)
+  if (bootRead == LOW && !bootLongHandled && (now - bootPressStart) >= LONG_PRESS_MS)
   {
-    if (reading != lastButtonState)
+    bootLongHandled = true;
+    if (!(airplaySessionActive || airplaySessionPending))
     {
-      lastButtonState = reading;
-      if (lastButtonState == LOW)
+      curr_url++;
+      if (curr_url >= stationsCount)
+        curr_url = 0;
+      if (currentStationIsValid())
       {
-        if (airplaySessionActive || airplaySessionPending)
-          return;
-        curr_url++;
-        if (curr_url >= stationsCount)
-          curr_url = 0;
-        if (currentStationIsValid())
-        {
-          showCurrentStation();
-          startAudio(stations[curr_url].c_str());
-          digitalWrite(46, HIGH);
-          preferences.putInt("curr_url", curr_url);
-        }
+        showCurrentStation();
+        startAudio(stations[curr_url].c_str());
+        digitalWrite(46, HIGH);
+        preferences.putInt("curr_url", curr_url);
       }
     }
   }
+  if (bootRead == HIGH && lastBootState == LOW)
+  {
+    if (!bootLongHandled && (now - bootPressStart) < LONG_PRESS_MS)
+    {
+      setVolume(currentVolume + VOL_STEP);
+    }
+  }
+  lastBootState = bootRead;
+
+  // ---- KEY: 短按音量-, 长按上一台 ----
+  if (keyRead == LOW && lastKeyState == HIGH)
+  {
+    keyPressStart = now;
+    keyLongHandled = false;
+  }
+  if (keyRead == LOW && !keyLongHandled && (now - keyPressStart) >= LONG_PRESS_MS)
+  {
+    keyLongHandled = true;
+    if (!(airplaySessionActive || airplaySessionPending))
+    {
+      curr_url--;
+      if (curr_url < 0)
+        curr_url = stationsCount - 1;
+      if (currentStationIsValid())
+      {
+        showCurrentStation();
+        startAudio(stations[curr_url].c_str());
+        digitalWrite(46, HIGH);
+        preferences.putInt("curr_url", curr_url);
+      }
+    }
+  }
+  if (keyRead == HIGH && lastKeyState == LOW)
+  {
+    if (!keyLongHandled && (now - keyPressStart) < LONG_PRESS_MS)
+    {
+      setVolume(currentVolume - VOL_STEP);
+    }
+  }
+  lastKeyState = keyRead;
 }
 
 void loop()
@@ -1050,7 +1129,15 @@ void loop()
   ArduinoOTA.handle();
   processAirPlayMessages();
   audio.loop();
-  handleButton();
+  handleButtons();
+  if (volumeDisplayHideTime != 0 && millis() >= volumeDisplayHideTime)
+  {
+    volumeDisplayHideTime = 0;
+    if (!airplaySessionActive)
+      showCurrentStation();
+    else
+      showAirPlayStatus("正在播放");
+  }
   if (!airplaySessionActive && !airplaySessionPending && isPlaying && currentStationIsValid() && (millis() - lastDataTime > RECONNECT_TIMEOUT))
   {
     Serial.println("音频无数据，正在重新连接...");
