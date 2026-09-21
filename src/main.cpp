@@ -32,7 +32,7 @@
 #define FFT_SAMPLES 256
 
 const int KEY_PIN = 18;
-static constexpr char FIRMWARE_VERSION[] = "0.3.4";
+static constexpr char FIRMWARE_VERSION[] = "0.3.5";
 const int DISPLAY_WIDTH = 400;
 const int DISPLAY_HEIGHT = 300;
 int curr_url = 0;

@@ -200,21 +200,26 @@ bool ES8311::begin(int32_t sda, int32_t scl, uint32_t frequency) {
 
 bool ES8311::setVolume(uint8_t volume){ // 0...100
     if (volume > 100) {volume = 100;}
-    int reg32;
-    if (volume == 0) {reg32 = 0;}
-    else {            reg32 = ((volume) * 256 / 100) - 1;}
-    return WriteReg(0x32, reg32);
+    uint8_t reg;
+    if (volume == 0) {
+        reg = 0x00;
+    } else {
+        float db = -50.0f + ((float)volume / 100.0f) * 50.0f;
+        reg = (uint8_t)((db + 95.5f) / 127.5f * 255.0f + 0.5f);
+    }
+    return WriteReg(0x32, reg);
 }
 
 uint8_t ES8311::getVolume(){
-    uint8_t reg32 = ReadReg(0x32);
-    uint8_t volume;
-    if (reg32 == 0) {
-        volume = 0;
-    } else {
-        volume = ((reg32 * 100) / 256) + 1;
+    uint8_t reg = ReadReg(0x32);
+    if (reg == 0) {
+        return 0;
     }
-    return volume;
+    float db = (float)reg / 255.0f * 127.5f - 95.5f;
+    float vol = (db + 50.0f) / 50.0f * 100.0f;
+    if (vol < 1.0f) vol = 1.0f;
+    if (vol > 100.0f) vol = 100.0f;
+    return (uint8_t)(vol + 0.5f);
 }
 
 bool ES8311::setSampleRate(uint32_t sample_rate){
